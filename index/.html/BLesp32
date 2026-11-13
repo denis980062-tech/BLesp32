@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>ESP32 BLE Умный Свет</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: #121212;
+            color: #ffffff;
+            text-align: center;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+        .container {
+            background: #1e1e1e;
+            padding: 30px 20px;
+            border-radius: 24px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            width: 100%;
+            max-width: 350px;
+        }
+        h1 { font-size: 24px; margin-bottom: 5px; }
+        .status { color: #aaaaaa; font-size: 14px; margin-bottom: 30px; height: 20px; }
+        
+        /* Кнопки */
+        button {
+            border: none;
+            border-radius: 16px;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+            width: 100%;
+            padding: 18px;
+            margin-bottom: 15px;
+            color: white;
+        }
+        .btn-connect { background: #3498db; }
+        .btn-connect:active { background: #2980b9; transform: scale(0.97); }
+        .btn-toggle { background: #2ecc71; box-shadow: 0 0 15px rgba(46, 204, 113, 0.4); }
+        .btn-toggle:active { background: #27ae60; transform: scale(0.97); }
+        
+        /* Ползунок */
+        .slider-container { margin-top: 30px; }
+        .slider-label { display: flex; justify-content: space-between; margin-bottom: 10px; font-weight: bold; }
+        input[type=range] {
+            -webkit-appearance: none;
+            width: 100%;
+            background: transparent;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 28px; width: 28px;
+            border-radius: 50%;
+            background: #ffffff;
+            cursor: pointer;
+            margin-top: -10px;
+            box-shadow: 0 0 10px rgba(255,255,255,0.5);
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%; height: 8px;
+            cursor: pointer;
+            background: #444;
+            border-radius: 4px;
+        }
+        
+        /* Скрываем управление до подключения */
+        #controls { display: none; opacity: 0; transition: opacity 0.5s; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Умный Свет</h1>
+    <div id="statusText" class="status">Ожидание подключения...</div>
+
+    <button id="connectBtn" class="btn-connect" onclick="connectBLE()">Подключить Bluetooth</button>
+
+    <div id="controls">
+        <button class="btn-toggle" onclick="sendBLECommand('1')">ВКЛ / ВЫКЛ</button>
+        
+        <div class="slider-container">
+            <div class="slider-label">
+                <span>Яркость</span>
+                <span id="brightnessValue">0%</span>
+            </div>
+            <input type="range" id="pwmSlider" min="0" max="100" value="0" oninput="updateSlider(this.value)" onchange="sendPWM(this.value)">
+        </div>
+    </div>
+</div>
+
+<script>
+    // UUID должны быть строго в нижнем регистре для WebBLE
+    const serviceUuid = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+    const rxCharacteristicUuid = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"; // Куда мы пишем команды
+
+    let bleDevice;
+    let rxCharacteristic;
+
+    async function connectBLE() {
+        try {
+            document.getElementById('statusText').innerText = "Поиск устройств...";
+            
+            // Запрашиваем устройство у браузера
+            bleDevice = await navigator.bluetooth.requestDevice({
+                filters: [{ name: 'ESP32-C3 Свет' }],
+                optionalServices: [serviceUuid]
+            });
+
+            bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+            document.getElementById('statusText').innerText = "Соединение...";
+            const server = await bleDevice.gatt.connect();
+            
+            document.getElementById('statusText').innerText = "Получение сервисов...";
+            const service = await server.getPrimaryService(serviceUuid);
+            
+            rxCharacteristic = await service.getCharacteristic(rxCharacteristicUuid);
+
+            // Если всё прошло успешно, показываем интерфейс
+            document.getElementById('statusText').innerText = "Подключено";
+            document.getElementById('statusText').style.color = "#2ecc71";
+            document.getElementById('connectBtn').style.display = "none";
+            
+            let controls = document.getElementById('controls');
+            controls.style.display = "block";
+            setTimeout(() => controls.style.opacity = "1", 50);
+
+        } catch (error) {
+            console.error(error);
+            document.getElementById('statusText').innerText = "Ошибка: " + error.message;
+            document.getElementById('statusText').style.color = "#e74c3c";
+        }
+    }
+
+    function onDisconnected() {
+        document.getElementById('statusText').innerText = "Устройство отключено";
+        document.getElementById('statusText').style.color = "#e74c3c";
+        document.getElementById('connectBtn').style.display = "block";
+        document.getElementById('controls').style.display = "none";
+        document.getElementById('controls').style.opacity = "0";
+    }
+
+    async function sendBLECommand(cmd) {
+        if (!rxCharacteristic) return;
+        try {
+            // Конвертируем текст в понятный для Bluetooth массив байт
+            let encoder = new TextEncoder();
+            await rxCharacteristic.writeValue(encoder.encode(cmd));
+        } catch (error) {
+            console.error("Ошибка отправки:", error);
+        }
+    }
+
+    function updateSlider(val) {
+        // Меняем цифру над ползунком во время перетаскивания
+        document.getElementById('brightnessValue').innerText = val + "%";
+    }
+
+    function sendPWM(val) {
+        // Отправляем команду при отпускании ползунка (например, %50)
+        sendBLECommand("%" + val);
+    }
+</script>
+
+</body>
+</html>
